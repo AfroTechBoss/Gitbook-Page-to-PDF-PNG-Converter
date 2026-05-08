@@ -3,162 +3,260 @@ const axios = require("axios");
 const xml2js = require("xml2js");
 const fs = require("fs");
 const path = require("path");
+const https = require("https");
 
-const URL_GITBOOK = "https://docs.walken.io";
+const BASE_URL = "https://docs.ifalabs.com";
+const SITEMAP_URL = `${BASE_URL}/sitemap.xml`;
+const OUTPUT_DIR = path.join(__dirname, "../pdfs");
 
-// Function to fetch the sitemap XML and parse it
-async function fetchSitemap(url) {
+// Ignore broken SSL cert chain
+const httpsAgent = new https.Agent({
+  rejectUnauthorized: false,
+});
+
+// Fetch sitemap URLs
+async function fetchSitemap() {
   try {
-    const response = await axios.get(url);
-    const sitemapXML = response.data;
+    console.log("Fetching sitemap...");
 
-    // Parse the XML sitemap into JSON
-    const parsedSitemap = await xml2js.parseStringPromise(sitemapXML);
-    const urls = parsedSitemap.urlset.url;
-
-    return urls.map((url) => url.loc[0]); // Extract the 'loc' elements (URLs)
-  } catch (error) {
-    console.error("Error fetching or parsing sitemap:", error);
-  }
-}
-
-// Function to convert a page to PDF with selectable text and high-quality images
-async function takeFullPagePdf(page, url, outputPath) {
-  try {
-    // Set the viewport to a reasonable width (e.g., 1280px) for full-page capture
-    await page.setViewport({ width: 1280, height: 800 });
-
-    // Set device scale factor for high DPI (2 is Retina)
-    await page.emulate({
-      viewport: { width: 1280, height: 800, deviceScaleFactor: 2 },
-      userAgent: "",
+    const response = await axios.get(SITEMAP_URL, {
+      httpsAgent,
+      timeout: 30000,
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+      },
     });
 
-    // Go to the page and wait for it to load completely
-    await page.goto(url, { waitUntil: "networkidle2" });
+    const parsed = await xml2js.parseStringPromise(response.data);
 
-    // Remove elements by setting display to 'none'
-    await page.evaluate(() => {
-      // Remove the AppBar element
-      const appBar = document.querySelector("div.appBarClassName"); // Replace with the correct selector for the AppBar
-      if (appBar) {
-        appBar.style.display = "none"; // Hide the AppBar
-      }
-
-      // Remove the element with class "scroll-nojump"
-      const scrollNoJump = document.querySelector(".scroll-nojump");
-      if (scrollNoJump) {
-        scrollNoJump.style.display = "none"; // Hide the scroll-nojump element
-      }
-
-      // Remove the menu element
-      const menu = document.querySelector(
-        "aside.relative.group.flex.flex-col.basis-full.bg-light"
-      );
-      if (menu) {
-        menu.style.display = "none"; // Hide the menu
-      }
-
-      // Remove the search button
-      const searchButton = document.querySelector(
-        "div.flex.md\\:w-56.grow-0.shrink-0.justify-self-end"
-      );
-      if (searchButton) {
-        searchButton.style.display = "none"; // Hide the search button div
-      }
-
-      // Remove the next button div
-      const nextButton = document.querySelector(
-        "div.flex.flex-col.md\\:flex-row.mt-6.gap-2.max-w-3xl.mx-auto.page-api-block\\:ml-0"
-      );
-      if (nextButton) {
-        nextButton.style.display = "none"; // Hide the next button div
-      }
-
-      // Remove the "Last updated" info
-      const lastUpdatedInfo = document.querySelector(
-        "div.flex.flex-row.items-center.mt-6.max-w-3xl.mx-auto.page-api-block\\:ml-0"
-      );
-      if (lastUpdatedInfo) {
-        lastUpdatedInfo.style.display = "none"; // Hide the "Last updated" div
-      }
-    });
-
-    // Convert the page to PDF with high-quality images
-    await page.pdf({
-      path: outputPath,
-      format: "A4", // Use A4 paper size for PDF
-      printBackground: true, // Ensure background images and colors are included
-      scale: 1, // Keep the original scale
-      preferCSSPageSize: true, // Ensure that the page uses CSS page size
-    });
-
-    console.log(`Saved PDF for: ${url} at ${outputPath}`);
-  } catch (error) {
-    console.error(`Failed to take PDF for: ${url}`, error);
-  }
-}
-
-// Function to group URLs based on their categories (like 'settings', 'android')
-function categorizeUrl(url) {
-  const parts = url.split("/");
-  if (parts.length < 5) {
-    console.error(`URL structure is incorrect: ${url}`);
-    return "unknown"; // Return a fallback category
-  }
-  const category = parts[4]; // Assuming categories are the 5th part of the URL
-  return category; // Return the category name (e.g., 'settings', 'android')
-}
-// function categorizeUrl(url) {
-//   const parts = url.split("/");
-//   const category = parts[4]; // Assuming categories are the 5th part of the URL
-
-//   return category; // Return the category name (e.g., 'settings', 'android')
-// }
-
-// Main function to run the script
-async function run() {
-  const sitemapUrl = `${URL_GITBOOK}/sitemap.xml`; // Replace with the actual sitemap URL
-  const saveDir = "./pdfs"; // Directory where PDFs will be saved
-
-  // Create the output directory if it doesn't exist
-  if (!fs.existsSync(saveDir)) {
-    fs.mkdirSync(saveDir);
-  }
-
-  // Fetch the sitemap URLs
-  const urls = await fetchSitemap(sitemapUrl);
-  if (!urls) return;
-
-  const browser = await puppeteer.launch();
-  const page = await browser.newPage();
-
-  // Initialize the page counter
-  let pageCounter = 1;
-
-  // Loop through each URL in the sitemap
-  for (const url of urls) {
-    // Determine the category based on the URL
-    const category = categorizeUrl(url);
-    const categoryDir = path.join(saveDir, category);
-
-    // Create a folder for the category if it doesn't exist
-    if (!fs.existsSync(categoryDir)) {
-      fs.mkdirSync(categoryDir, { recursive: true });
+    // Standard sitemap
+    if (parsed.urlset && parsed.urlset.url) {
+      return parsed.urlset.url.map((u) => u.loc[0]);
     }
 
-    // Generate a sequential filename for the PDF (page_1.pdf, page_2.pdf, ...)
-    const pdfFileName = `page_${pageCounter}.pdf`; // Use pageCounter for unique file names
-    const pdfPath = path.join(categoryDir, pdfFileName);
+    // Sitemap index
+    if (parsed.sitemapindex && parsed.sitemapindex.sitemap) {
+      let allUrls = [];
 
-    // Capture the full page as a PDF
-    await takeFullPagePdf(page, url, pdfPath);
+      const sitemapLinks = parsed.sitemapindex.sitemap.map(
+        (s) => s.loc[0]
+      );
 
-    // Increment the page counter
-    pageCounter++;
+      for (const sitemap of sitemapLinks) {
+        console.log(`Fetching nested sitemap: ${sitemap}`);
+
+        const nestedResponse = await axios.get(sitemap, {
+          httpsAgent,
+          timeout: 30000,
+        });
+
+        const nestedParsed = await xml2js.parseStringPromise(
+          nestedResponse.data
+        );
+
+        if (
+          nestedParsed.urlset &&
+          nestedParsed.urlset.url
+        ) {
+          const urls = nestedParsed.urlset.url.map(
+            (u) => u.loc[0]
+          );
+
+          allUrls.push(...urls);
+        }
+      }
+
+      return allUrls;
+    }
+
+    console.log("Unsupported sitemap structure");
+    return [];
+  } catch (error) {
+    console.error("Failed to fetch sitemap:");
+    console.error(error.message);
+    return [];
+  }
+}
+
+// Create safe filenames
+function sanitizeFileName(name) {
+  return name.replace(/[<>:"/\\|?*]+/g, "_");
+}
+
+// Categorize URLs
+function categorizeUrl(url) {
+  try {
+    const parsed = new URL(url);
+
+    const parts = parsed.pathname
+      .split("/")
+      .filter(Boolean);
+
+    return parts[0] || "general";
+  } catch {
+    return "unknown";
+  }
+}
+
+// Remove unnecessary GitBook UI
+async function cleanPage(page) {
+  await page.evaluate(() => {
+    const selectors = [
+      "aside",
+      "nav",
+      "header",
+      ".scroll-nojump",
+      "[data-testid='search']",
+      ".group.flex.flex-col.basis-full.bg-light",
+    ];
+
+    selectors.forEach((selector) => {
+      document.querySelectorAll(selector).forEach((el) => {
+        el.remove();
+      });
+    });
+  });
+}
+
+// Save page as PDF
+async function savePageAsPDF(page, url, outputPath) {
+  try {
+    console.log(`Opening: ${url}`);
+
+    await page.goto(url, {
+      waitUntil: "domcontentloaded",
+      timeout: 60000,
+    });
+
+    // Give React/GitBook time to hydrate
+    await new Promise((resolve) =>
+      setTimeout(resolve, 5000)
+    );
+
+    // Detect application crash pages
+    const html = await page.content();
+
+    if (
+      html.includes("Application error") ||
+      html.includes("client-side exception")
+    ) {
+      console.log(`Skipping broken page: ${url}`);
+      return;
+    }
+
+    // Wait for actual content
+    await page.waitForSelector("main", {
+      timeout: 30000,
+    });
+
+    // Remove UI junk
+    await cleanPage(page);
+
+    // Export PDF
+    await page.pdf({
+      path: outputPath,
+      format: "A4",
+      printBackground: true,
+      preferCSSPageSize: true,
+      margin: {
+        top: "20px",
+        bottom: "20px",
+        left: "20px",
+        right: "20px",
+      },
+    });
+
+    console.log(`Saved: ${outputPath}`);
+  } catch (error) {
+    console.error(`Failed page: ${url}`);
+    console.error(error.message);
+  }
+}
+
+// Main runner
+async function run() {
+  // Create output dir
+  if (!fs.existsSync(OUTPUT_DIR)) {
+    fs.mkdirSync(OUTPUT_DIR, {
+      recursive: true,
+    });
+  }
+
+  // Fetch URLs
+  const urls = await fetchSitemap();
+
+  if (!urls.length) {
+    console.log("No URLs found.");
+    return;
+  }
+
+  console.log(`Found ${urls.length} URLs`);
+
+  // Launch browser
+  const browser = await puppeteer.launch({
+    headless: true,
+    ignoreHTTPSErrors: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-web-security",
+      "--allow-running-insecure-content",
+    ],
+  });
+
+  const page = await browser.newPage();
+
+  // Real browser fingerprint
+  await page.setUserAgent(
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+  );
+
+  await page.setViewport({
+    width: 1440,
+    height: 900,
+    deviceScaleFactor: 2,
+  });
+
+  let counter = 1;
+
+  // Process URLs
+  for (const url of urls) {
+    const category = categorizeUrl(url);
+
+    const categoryDir = path.join(
+      OUTPUT_DIR,
+      category
+    );
+
+    if (!fs.existsSync(categoryDir)) {
+      fs.mkdirSync(categoryDir, {
+        recursive: true,
+      });
+    }
+
+    const fileName = sanitizeFileName(
+      `page_${counter}.pdf`
+    );
+
+    const outputPath = path.join(
+      categoryDir,
+      fileName
+    );
+
+    await savePageAsPDF(
+      page,
+      url,
+      outputPath
+    );
+
+    counter++;
   }
 
   await browser.close();
+
+  console.log("Finished.");
 }
 
 run().catch(console.error);
